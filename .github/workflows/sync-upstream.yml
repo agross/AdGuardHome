@@ -1,0 +1,63 @@
+name: sync-upstream
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  UPSTREAM_REPO: AdguardTeam/AdGuardHome
+  # Branch in this fork is that released.
+  RELEASE_BRANCH: fix-8024-release
+  # Branch that carries your fork changes
+  FIX_BRANCH: fix-8024
+
+jobs:
+  rebase:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout release branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_BRANCH }}
+          fetch-depth: 0
+
+      - name: Rebase fix branch on upstream release tag and update release branch
+        run: |
+          set -euo pipefail
+
+          git remote add upstream "https://github.com/${UPSTREAM_REPO}.git"
+          git fetch --tags upstream
+          git fetch origin "${FIX_BRANCH}" "${RELEASE_BRANCH}"
+
+          base_tag="$(
+            git tag --list 'v*' --sort=-v:refname \
+              | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+              | head -n1
+          )"
+
+          if [ -z "${base_tag}" ]; then
+            echo "No stable upstream release tag matching vX.Y.Z was found"
+            exit 1
+          fi
+
+          if ! git rev-parse -q --verify "refs/tags/${base_tag}" >/dev/null; then
+            echo "Base tag ${base_tag} not found"
+            exit 1
+          fi
+
+          echo "Using base tag: ${base_tag}"
+
+          # 1) Rebase release branch on top of the selected upstream release tag.
+          git checkout -B "${RELEASE_BRANCH}" "origin/${RELEASE_BRANCH}"
+          git rebase "${base_tag}"
+          git push --force-with-lease origin "${RELEASE_BRANCH}"
+
+          # 2) Keep fix branch based on the latest upstream master.
+          git checkout -B "${FIX_BRANCH}" "origin/${FIX_BRANCH}"
+          git rebase upstream/master
+          git push --force-with-lease origin "${FIX_BRANCH}"
